@@ -124,18 +124,6 @@ stray comment in the metadata block, 1386 box-drawing characters that became
 mojibake because Windhawk reads the source as ANSI, and a lone carriage return
 that turned the rest of a comment line into executable code.
 
-## Prior art
-
-[Wobbly Windows](https://windhawk.net/mods/wobbly-windows) implements the same
-effect inside `dwm.exe` using private uDWM symbols, which lets it keep the
-window content live and animate snapping and resizing as well as dragging.
-
-This one takes the opposite approach for different reasons: nothing is injected
-into the compositor, so a fault here affects one application rather than the
-desktop, and nothing depends on undocumented DWM internals that a Windows
-update can change. The trade is a snapshot instead of live content, and drags
-only.
-
 ## Questions, problems, ideas
 
 Join the Discord: https://discord.gg/8wwfPxfMWA — or open an
