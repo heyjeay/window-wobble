@@ -5,7 +5,7 @@
 // @version         1.0.0
 // @author          heyjeay
 // @github          https://github.com/heyjeay
-// @homepage        https://github.com/heyjeay/wobblywin
+// @homepage        https://github.com/heyjeay/window-wobble
 // @license         GPL-3.0-or-later
 // @include         *
 // @exclude         sihost.exe
@@ -26,6 +26,8 @@
 KDE-style spring-physics window dragging. Grab a title bar and the window
 follows your cursor like jelly - the title bar keeps up, the body trails
 behind, and it settles with a wobble when you let go.
+
+![Window Wobble in action](https://raw.githubusercontent.com/heyjeay/window-wobble/main/docs/preview.gif)
 
 Hold **Shift** (configurable) while grabbing to move a window normally.
 
@@ -56,8 +58,9 @@ trade you prefer:
 - It wobbles on snap and resize as well as drag
 - One copy in the compositor, rather than a small overlay per application
 
-**Questions, problems or ideas? Join the Discord:**
-https://discord.gg/8wwfPxfMWA
+**Questions, problems or ideas?** Join the Discord
+(https://discord.gg/8wwfPxfMWA) or open an issue
+(https://github.com/heyjeay/window-wobble/issues).
 
 ## How it works
 
