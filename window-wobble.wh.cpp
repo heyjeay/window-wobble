@@ -105,9 +105,9 @@ Window content is a snapshot for the duration of the drag, so a playing video
 appears frozen while you hold it. This is inherent to the approach - capturing
 live content per frame is far more expensive than one `PrintWindow`.
 
-The GPU resources are released after a few seconds without a drag, so an
-application you dragged once does not hold a device and a swapchain for the
-rest of its life.
+The Direct3D device and the overlay are released after a few seconds without
+a drag, so an application you dragged once does not hold them for the rest of
+its life. They are rebuilt on the next drag, which costs a few milliseconds.
 */
 // ==/WindhawkModReadme==
 
@@ -505,18 +505,6 @@ struct Mesh {
         settled = false;
     }
 
-    // Largest distance any vertex has strayed from its rest position. The
-    // overlay surface has to be big enough to contain this, or the wobble
-    // gets clipped at the edge of the swapchain.
-    float MaxDisplacement() const {
-        float m = 0.0f;
-        for (size_t n = 0; n < pos.size(); ++n) {
-            m = fmaxf(m, fabsf(pos[n].x - rest[n].x));
-            m = fmaxf(m, fabsf(pos[n].y - rest[n].y));
-        }
-        return m;
-    }
-
     bool Update(float dt) {
         if (settled) return false;
         const bool band = bandK > 0.0f;
@@ -850,14 +838,21 @@ struct Device {
 
 enum class DrawResult { Ok, DeviceLost, Failed };
 
-// The swapchain is sized to the dragged window plus a margin for the wobble,
-// not to the whole virtual desktop: a desktop-sized one is ~29 MB for a
-// single 1440p screen and ~130 MB for two 4K screens, and a plain title-bar
-// click was enough to allocate it in every process. The window itself still
-// spans the desktop, which costs nothing because WS_EX_NOREDIRECTIONBITMAP
-// means it has no surface of its own; the small swapchain is moved around
-// inside it with a DirectComposition offset.
-static constexpr int kWobbleMargin = 384;
+// The swapchain spans the whole virtual desktop and never moves.
+//
+// A window-sized swapchain repositioned each frame with
+// IDCompositionVisual::SetOffsetX/Y is far cheaper in memory, and was tried:
+// ~29 MB for one 1440p screen against ~130 MB for two 4K ones. It had to be
+// reverted. A DirectComposition commit is applied by DWM on its own
+// schedule while the pixels arrive through Present, so when the two land on
+// different frames the entire image shifts by one frame of cursor travel.
+// The wobble still looked right in isolation, but the window felt like it
+// lagged the pointer, which for an effect whose whole purpose is how it
+// feels is not a trade worth making.
+//
+// The per-process cost is instead bounded by releasing the device and the
+// swapchain after an idle period - see WorkerProc. A desktop-sized surface
+// exists only while a drag is actually happening.
 
 struct Overlay {
     Device* d = nullptr;
@@ -871,16 +866,14 @@ struct Overlay {
     Com<ID3D11ShaderResourceView> srv;
     Com<ID3D11Buffer>             vb;
 
-    int vx = 0, vy = 0, vw = 0, vh = 0;     // virtual desktop, window bounds
-    int surfW = 0, surfH = 0;               // swapchain size
-    int offX = INT_MIN, offY = INT_MIN;     // current visual offset, screen px
+    int vx = 0, vy = 0, vw = 0, vh = 0;     // virtual desktop, = surface bounds
     int vertCount = 0;
     std::vector<Vertex> verts;
 
     ~Overlay() { Destroy(); }
 
     bool EnsureWindow();
-    bool EnsureSurface(int needW, int needH);
+    bool EnsureSurface();
     bool DisplayChanged() const;
     void WarmPipeline();
     void WarmPresent();
@@ -954,23 +947,10 @@ bool Overlay::EnsureWindow() {
     return true;
 }
 
-bool Overlay::EnsureSurface(int needW, int needH) {
+bool Overlay::EnsureSurface() {
     if (!d || !d->Init()) { Wh_Log(L"overlay: D3D device init failed"); return false; }
-    if (!EnsureWindow()) return false;
-
-    // Never larger than the desktop itself. Without this cap a maximized
-    // window would ask for the full desktop plus two margins, which is more
-    // than the desktop-sized swapchain this change exists to avoid. A window
-    // that big has nowhere on screen to wobble to, so losing the margin
-    // costs nothing visible.
-    const int wantW = std::max(16, std::min(needW + 2 * kWobbleMargin, vw));
-    const int wantH = std::max(16, std::min(needH + 2 * kWobbleMargin, vh));
-    if (swap.p && wantW == surfW && wantH == surfH) return true;
-
-    rtv.reset();
-    swap.reset();
-    surfW = wantW;
-    surfH = wantH;
+    if (!EnsureWindow()) return false;      // rebuilds if the desktop changed
+    if (swap.p) return true;
 
     const bool built = [&] {
         Com<IDXGIDevice> dxgiDev;
@@ -983,8 +963,8 @@ bool Overlay::EnsureSurface(int needW, int needH) {
             return false;
 
         DXGI_SWAP_CHAIN_DESC1 sd{};
-        sd.Width            = surfW;
-        sd.Height           = surfH;
+        sd.Width            = vw;
+        sd.Height           = vh;
         sd.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
         sd.SampleDesc.Count = 1;
         sd.BufferUsage      = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -993,7 +973,7 @@ bool Overlay::EnsureSurface(int needW, int needH) {
         sd.AlphaMode        = DXGI_ALPHA_MODE_PREMULTIPLIED;
         HRESULT hr = factory->CreateSwapChainForComposition(d->dev, &sd, nullptr, &swap);
         if (FAILED(hr)) {
-            Wh_Log(L"overlay: swapchain failed hr=0x%08X (%dx%d)", hr, surfW, surfH);
+            Wh_Log(L"overlay: swapchain failed hr=0x%08X (%dx%d)", hr, vw, vh);
             return false;
         }
 
@@ -1018,8 +998,7 @@ bool Overlay::EnsureSurface(int needW, int needH) {
             target->SetRoot(visual);
         }
         visual->SetContent(swap);
-        offX = offY = INT_MIN;          // force the next Draw to place it
-        dcomp->Commit();
+        dcomp->Commit();                // once, at build time; never per frame
         return true;
     }();
 
@@ -1191,27 +1170,12 @@ void Overlay::Destroy() {
     srv.reset(); tex.reset(); vb.reset(); rtv.reset();
     visual.reset(); target.reset(); dcomp.reset(); swap.reset();
     if (hwnd) { DestroyWindow(hwnd); hwnd = nullptr; }
-    surfW = surfH = 0;
-    offX = offY = INT_MIN;
     vertCount = 0;
     verts.clear();
 }
 
 DrawResult Overlay::Draw(const Mesh& m) {
     if (!d || !d->ok || !swap.p || !rtv.p) return DrawResult::Failed;
-
-    // The swapchain only covers the window plus a margin, so it has to be
-    // placed where the window is. Keeping the content centred in it means the
-    // wobble has the same headroom in every direction.
-    const int originX = (int)m.rest[0].x - kWobbleMargin;
-    const int originY = (int)m.rest[0].y - kWobbleMargin;
-    if (originX != offX || originY != offY) {
-        offX = originX;
-        offY = originY;
-        visual->SetOffsetX((float)(offX - vx));
-        visual->SetOffsetY((float)(offY - vy));
-        dcomp->Commit();
-    }
 
     const int cells = m.nx - 1;
     int n = 0;
@@ -1241,7 +1205,7 @@ DrawResult Overlay::Draw(const Mesh& m) {
     }
 
     struct CB { float ox, oy, sw, sh; } cbv{
-        (float)offX, (float)offY, (float)surfW, (float)surfH };
+        (float)vx, (float)vy, (float)vw, (float)vh };
     if (SUCCEEDED(ctx->Map(d->cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) {
         memcpy(map.pData, &cbv, sizeof(cbv));
         ctx->Unmap(d->cb, 0);
@@ -1252,7 +1216,7 @@ DrawResult Overlay::Draw(const Mesh& m) {
     ctx->OMSetRenderTargets(1, rts, nullptr);
     ctx->ClearRenderTargetView(rtv, clear);
 
-    D3D11_VIEWPORT vp{ 0, 0, (float)surfW, (float)surfH, 0, 1 };
+    D3D11_VIEWPORT vp{ 0, 0, (float)vw, (float)vh, 0, 1 };
     ctx->RSSetViewports(1, &vp);
 
     UINT stride = sizeof(Vertex), offset = 0;
@@ -1422,8 +1386,7 @@ static bool DoWobbleDrag(Device& dev, Overlay& ov, HWND hwnd) {
     // Warm the GPU while the window is still visible and the pointer has not
     // moved, so the one-time cost lands where nothing is on screen waiting.
     {
-        const RECT pre = VisibleRect(hwnd);
-        if (!ov.EnsureSurface(pre.right - pre.left, pre.bottom - pre.top)) {
+        if (!ov.EnsureSurface()) {
             Wh_Log(L"abort: overlay surface unavailable");
             return false;
         }
@@ -1498,13 +1461,6 @@ static bool DoWobbleDrag(Device& dev, Overlay& ov, HWND hwnd) {
     RECT outerRc{}; GetWindowRect(hwnd, &outerRc);
     const int frameDx = start.left - outerRc.left;
     const int frameDy = start.top  - outerRc.top;
-
-    // The window may have changed size since the warm-up (un-maximizing, or
-    // simply a different window to last time).
-    if (!ov.EnsureSurface(bmp.w, bmp.h)) {
-        Wh_Log(L"abort: overlay surface unavailable for %dx%d", bmp.w, bmp.h);
-        return false;
-    }
 
     // Put the overlay up BEFORE hiding the window, showing the captured image
     // at exactly the window's own position. Hiding first left a gap where
