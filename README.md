@@ -17,20 +17,6 @@ mod browser.
 To build it yourself: Windhawk → **Create New Mod**, paste
 [`window-wobble.wh.cpp`](window-wobble.wh.cpp), press **Compile**.
 
-## How it differs from the Wobbly Windows mod
-
-[Wobbly Windows](https://windhawk.net/mods/wobbly-windows) does the same effect
-from inside `dwm.exe`, using private uDWM symbols. That is the better place to
-do it: the content stays live, and it wobbles on snapping and resizing too, not
-just dragging. If that is what you want, use it.
-
-This mod runs in the application's own process and draws on its own Direct3D
-overlay instead. Nothing is injected into the compositor, so a fault here
-cannot take the desktop down with it, and no private DWM symbols are involved,
-so a Windows update changing uDWM internals cannot break it. The cost is that
-the window content is a snapshot for the length of the drag, and that it only
-fires on drags.
-
 ## How it works
 
 A title-bar press is caught at `DispatchMessage`, with `DefWindowProc` as a
@@ -104,6 +90,18 @@ Each of those lints exists because the corresponding mistake shipped once: a
 stray comment in the metadata block, 1386 box-drawing characters that became
 mojibake because Windhawk reads the source as ANSI, and a lone carriage return
 that turned the rest of a comment line into executable code.
+
+## Prior art
+
+[Wobbly Windows](https://windhawk.net/mods/wobbly-windows) implements the same
+effect inside `dwm.exe` using private uDWM symbols, which lets it keep the
+window content live and animate snapping and resizing as well as dragging.
+
+This one takes the opposite approach for different reasons: nothing is injected
+into the compositor, so a fault here affects one application rather than the
+desktop, and nothing depends on undocumented DWM internals that a Windows
+update can change. The trade is a snapshot instead of live content, and drags
+only.
 
 ## Questions, problems, ideas
 
