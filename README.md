@@ -11,8 +11,8 @@ Hold **Shift** (configurable) while grabbing to move a window normally.
 
 ## Install
 
-Install [Windhawk](https://windhawk.net/), then find **Window Wobble** in the
-mod browser.
+Install [Windhawk](https://windhawk.net/), then find **Window Wobble - by
+HeyJeay** in the mod browser.
 
 To build it yourself: Windhawk → **Create New Mod**, paste
 [`window-wobble.wh.cpp`](window-wobble.wh.cpp), press **Compile**.
